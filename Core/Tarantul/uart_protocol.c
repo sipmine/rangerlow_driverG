@@ -44,12 +44,12 @@ float bytes_to_float(const uint8_t* bytes)
     return x;
 }
 
-void int_16_to_bytes(const int32_t x, uint8_t* bytes)
+void int_32_to_bytes(const int32_t x, uint8_t* bytes)
 {
    memcpy(bytes, &x, 4);
 }
 
-int32_t bytes_to_int_16(const uint8_t* bytes)
+int32_t bytes_to_int_32(const uint8_t* bytes)
 {
     int32_t x;
     memcpy(&x, bytes, 4);

@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "tim.h"
@@ -27,83 +28,43 @@
 #include "../Tarantul/motor_controller.h"
 #include "../Tarantul/uart_protocol.h"
 
-/* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
-
-/* USER CODE END Includes */
-
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
-
-/* USER CODE BEGIN PV */
-
-/* USER CODE END PV */
-
-/* Private function prototypes -----------------------------------------------*/
+#define SIZE 4
+#define PACKET_SIZE 8
 void SystemClock_Config(void);
-/* USER CODE BEGIN PFP */
 
-/* USER CODE END PFP */
+uint8_t msg[PACKET_SIZE] = {0};
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
+uint8_t core_id = 0x41;
 
-/* USER CODE END 0 */
-uint8_t msg[6] = {0};
-uint8_t success_response = 0xFF;
-uint8_t failure_response = 0x11;
+void createEncMessage(const uint8_t CMD,  int32_t count, uint8_t* tx_data)
+{
+  protocol msg;
+  msg.core_id = core_id;
+  msg.cmd = CMD;
+  uint8_t bytes[SIZE] = {0};
+  int_32_to_bytes(count, bytes);
+  memcpy(msg.data, bytes,SIZE);
+  create_msg(msg, tx_data);
+}
+
+
+
 /**
   * @brief  The application entry point.
   * @retval int
   */
 int main(void)
 {
-  /* USER CODE BEGIN 1 */
 
-  /* USER CODE END 1 */
-
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
-  /* Configure the system clock */
   SystemClock_Config();
 
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM1_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_USART3_UART_Init();
-  /* USER CODE BEGIN 2 */
-
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  HAL_UART_Receive_IT(&huart3, msg, 6);
 
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_3);
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_4);
@@ -112,53 +73,87 @@ int main(void)
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 
   MotorController_t m1;
-  m1.id = 0x44;
+  m1.id = M1_CMD_PWM;
   m1.enc_htim = TIM1;
   m1.motor_htim = &htim3;
   m1.forward_ch = TIM_CHANNEL_4;
   m1.backward_ch = TIM_CHANNEL_3;
   m1.counter = 0;
 
+  MotorController_t m2;
+  m1.id = M2_CMD_PWM;
+  m1.enc_htim = TIM4;
+  m1.motor_htim = &htim3;
+  m1.forward_ch = TIM_CHANNEL_1;
+  m1.backward_ch = TIM_CHANNEL_2;
+  m1.counter = 0;
 
 
+  HAL_UART_Receive_IT(&huart3, msg, PACKET_SIZE);
+  if (HAL_GPIO_ReadPin(ADDR_X0_GPIO_Port, ADDR_X0_Pin) == 1)
+  {
+    core_id = 0x42;
+  }
+  if (HAL_GPIO_ReadPin(ADDR_X1_GPIO_Port, ADDR_X1_Pin) == 1)
+  {
+    core_id = 0x43;
+  }
+  uint8_t csum =0 ;
+  uint8_t tx_data[PACKET_SIZE] = {0xA5, core_id, 0x01, 0xAA, 0xAA, 0xAA, 0xAA, 0};
+  for (int i = 0; i < 5; ++i) csum ^= tx_data[i];
+  tx_data[PACKET_SIZE-1] = csum;
 
+  bool success = false;
+
+  HAL_UART_Transmit_IT(&huart3, tx_data, PACKET_SIZE);
   while (1)
   {
-
-    if (huart3.RxXferCount == 0) // Reception complete
+    if (!success)
     {
-      // Validate message: starts with 0x44, 0x0A and ends with 0xAA, 0xAA
-      if (msg[0] == 0x44 && msg[1] == 0x0A)
+
+      HAL_UART_Transmit_IT(&huart3, tx_data, PACKET_SIZE);
+      if (huart3.RxXferCount == 0)
       {
-        HAL_UART_Transmit(&huart3, &success_response, 1, 100);
-      }
-      else
-      {
-        HAL_UART_Transmit(&huart3, &failure_response, 1, 100);
+        HAL_UART_Receive_IT(&huart3, msg, PACKET_SIZE);
+        if (memcmp(tx_data, msg, PACKET_SIZE) == 0) success = true;
       }
 
-      protocol data;
-      parse_msg(&data, msg);
+    } else
+    {
+      MotorController_UpdateEnc(&m1);
+      MotorController_UpdateEnc(&m2);
+      uint8_t tx_buffer_enс_1[PACKET_SIZE] = {0};
+      uint8_t tx_buffer_enс_2[PACKET_SIZE] = {0};
 
-      if (data.core_id == 0x44)
+      createEncMessage(M1_CMD_ENC, MotorController_GetCounter(&m1), tx_buffer_enс_1);
+      createEncMessage(M2_CMD_ENC, MotorController_GetCounter(&m2), tx_buffer_enс_2);
+
+      HAL_UART_Transmit(&huart3, tx_buffer_enс_1, PACKET_SIZE, 100);
+      HAL_UART_Transmit(&huart3, tx_buffer_enс_2, PACKET_SIZE, 100);
+
+      if (huart3.RxXferCount == 0) // Reception complete
       {
-        if (data.cmd == 0x0A)
+        protocol data;
+        parse_msg(&data, msg);
+
+        if (data.core_id == core_id )
         {
-          MotorController_SetSpeed(&m1, bytes_to_float(data.data));
+          if (data.cmd == m1.id)
+          {
+            MotorController_SetSpeed(&m1, bytes_to_float(data.data));
+          }
+          else if (data.cmd == m2.id)
+          {
+            MotorController_SetSpeed(&m2, bytes_to_float(data.data));
+          }
         }
-        else if (data.cmd == 0x0B)
-        {
 
-        }
+
+        // Restart reception
+        HAL_UART_Receive_IT(&huart3, msg, 6);
       }
-
-
-      // Restart reception
-      HAL_UART_Receive_IT(&huart3, msg, 6);
-      /* USER CODE BEGIN 3 */
     }
   }
-  /* USER CODE END 3 */
 }
 
 /**
@@ -200,23 +195,16 @@ void SystemClock_Config(void)
   }
 }
 
-/* USER CODE BEGIN 4 */
-
-/* USER CODE END 4 */
-
 /**
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
   }
-  /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
