@@ -18,17 +18,26 @@ protocol create_data(const uint8_t core_id, uint8_t cmd, uint8_t data[])
 
 void create_msg(const protocol data, uint8_t* tx_buffer)
 {
-    tx_buffer[0] = data.core_id;
-    tx_buffer[1] = data.cmd;
-    memcpy(tx_buffer+2, data.data, 4);
+    tx_buffer[0] = 0xA5;
+    tx_buffer[1] = data.core_id;
+    if (data.core_id == 0x01)
+    {
+        int a = 0;
+
+    }
+    tx_buffer[2] = data.cmd;
+    memcpy(tx_buffer+3, data.data, 4);
+    uint8_t csum = 0;
+    for (int i = 0; i < 5; ++i) csum ^= tx_buffer[i];
+    tx_buffer[7] = csum;
 
 }
 
 void parse_msg(protocol *data, const uint8_t* rx_buffer)
 {
-    data->core_id = rx_buffer[0];
-    data->cmd = rx_buffer[1];
-    memcpy(data->data, rx_buffer+2, 4);
+    data->core_id = rx_buffer[1];
+    data->cmd = rx_buffer[2];
+    memcpy(data->data, rx_buffer+3, 4);
 }
 
 void float_to_bytes(const float x, uint8_t* bytes)

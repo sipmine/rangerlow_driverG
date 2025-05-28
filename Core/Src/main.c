@@ -1,27 +1,9 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-/* Includes ------------------------------------------------------------------*/
+
 #include "main.h"
 
 #include <stdbool.h>
 #include <string.h>
-
+#include <dma.h>
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -33,20 +15,82 @@
 void SystemClock_Config(void);
 
 uint8_t msg[PACKET_SIZE] = {0};
+volatile bool uart_tx_ready = true;
 
 uint8_t core_id = 0x41;
 
+
+MotorController_t m1;
+MotorController_t m2;
+
+uint8_t tx_buffer_enc_1[PACKET_SIZE] = {0};
+uint8_t tx_buffer_enc_2[PACKET_SIZE] = {0};
 void createEncMessage(const uint8_t CMD,  int32_t count, uint8_t* tx_data)
 {
   protocol msg;
   msg.core_id = core_id;
   msg.cmd = CMD;
+  msg.data[0] = 0;
+  msg.data[1] = 0;
+  msg.data[2] = 0;
+  msg.data[3] = 0;
   uint8_t bytes[SIZE] = {0};
   int_32_to_bytes(count, bytes);
   memcpy(msg.data, bytes,SIZE);
   create_msg(msg, tx_data);
 }
 
+
+bool validate_msg(const uint8_t* msg)
+{
+  if (msg[0] != 0xA5) return false;
+
+  // Calculate checksum
+  uint8_t calculated_checksum = 0;
+  for (int i = 0; i < PACKET_SIZE - 1; i++)
+  {
+    calculated_checksum ^= msg[i];
+  }
+
+  // Check if calculated checksum matches received checksum
+  if (calculated_checksum != msg[PACKET_SIZE - 1]) return false;
+
+  return true;
+}
+
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart == &huart3)
+  {
+    protocol data;
+    if (validate_msg(msg))
+    {
+      parse_msg(&data, msg);
+
+      if (data.core_id == core_id )
+      {
+        if (data.cmd == m1.id)
+        {
+          MotorController_SetSpeed(&m1, bytes_to_float(data.data));
+        }
+        else if (data.cmd == m2.id)
+        {
+          MotorController_SetSpeed(&m2, bytes_to_float(data.data));
+        }
+      }
+    }
+
+    HAL_UART_Receive_DMA(&huart3, msg, PACKET_SIZE);
+  }
+}
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart == &huart3)
+  {
+    uart_tx_ready = true;
+  }
+}
 
 
 /**
@@ -61,6 +105,7 @@ int main(void)
   SystemClock_Config();
 
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM1_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
@@ -69,10 +114,16 @@ int main(void)
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_3);
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_4);
 
+
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_3);
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_4);
+
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 
-  MotorController_t m1;
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+
   m1.id = M1_CMD_PWM;
   m1.enc_htim = TIM1;
   m1.motor_htim = &htim3;
@@ -80,79 +131,41 @@ int main(void)
   m1.backward_ch = TIM_CHANNEL_3;
   m1.counter = 0;
 
-  MotorController_t m2;
-  m1.id = M2_CMD_PWM;
-  m1.enc_htim = TIM4;
-  m1.motor_htim = &htim3;
-  m1.forward_ch = TIM_CHANNEL_1;
-  m1.backward_ch = TIM_CHANNEL_2;
-  m1.counter = 0;
+  m2.id = M2_CMD_PWM;
+  m2.enc_htim = TIM4;
+  m2.motor_htim = &htim3;
+  m2.forward_ch = TIM_CHANNEL_1;
+  m2.backward_ch = TIM_CHANNEL_2;
+  m2.counter = 0;
 
 
-  HAL_UART_Receive_IT(&huart3, msg, PACKET_SIZE);
-  if (HAL_GPIO_ReadPin(ADDR_X0_GPIO_Port, ADDR_X0_Pin) == 1)
+  if (HAL_GPIO_ReadPin(ADDR_X0_GPIO_Port, ADDR_X0_Pin) == 0)
   {
     core_id = 0x42;
   }
-  if (HAL_GPIO_ReadPin(ADDR_X1_GPIO_Port, ADDR_X1_Pin) == 1)
+  if (HAL_GPIO_ReadPin(ADDR_X1_GPIO_Port, ADDR_X1_Pin) == 0)
   {
     core_id = 0x43;
   }
-  uint8_t csum =0 ;
-  uint8_t tx_data[PACKET_SIZE] = {0xA5, core_id, 0x01, 0xAA, 0xAA, 0xAA, 0xAA, 0};
-  for (int i = 0; i < 5; ++i) csum ^= tx_data[i];
-  tx_data[PACKET_SIZE-1] = csum;
 
-  bool success = false;
 
-  HAL_UART_Transmit_IT(&huart3, tx_data, PACKET_SIZE);
+  HAL_UART_Receive_DMA(&huart3, msg, PACKET_SIZE);
   while (1)
   {
-    if (!success)
+    MotorController_UpdateEnc(&m1);
+    MotorController_UpdateEnc(&m2);
+
+    if (uart_tx_ready)
     {
-
-      HAL_UART_Transmit_IT(&huart3, tx_data, PACKET_SIZE);
-      if (huart3.RxXferCount == 0)
-      {
-        HAL_UART_Receive_IT(&huart3, msg, PACKET_SIZE);
-        if (memcmp(tx_data, msg, PACKET_SIZE) == 0) success = true;
-      }
-
-    } else
-    {
-      MotorController_UpdateEnc(&m1);
-      MotorController_UpdateEnc(&m2);
-      uint8_t tx_buffer_enс_1[PACKET_SIZE] = {0};
-      uint8_t tx_buffer_enс_2[PACKET_SIZE] = {0};
-
-      createEncMessage(M1_CMD_ENC, MotorController_GetCounter(&m1), tx_buffer_enс_1);
-      createEncMessage(M2_CMD_ENC, MotorController_GetCounter(&m2), tx_buffer_enс_2);
-
-      HAL_UART_Transmit(&huart3, tx_buffer_enс_1, PACKET_SIZE, 100);
-      HAL_UART_Transmit(&huart3, tx_buffer_enс_2, PACKET_SIZE, 100);
-
-      if (huart3.RxXferCount == 0) // Reception complete
-      {
-        protocol data;
-        parse_msg(&data, msg);
-
-        if (data.core_id == core_id )
-        {
-          if (data.cmd == m1.id)
-          {
-            MotorController_SetSpeed(&m1, bytes_to_float(data.data));
-          }
-          else if (data.cmd == m2.id)
-          {
-            MotorController_SetSpeed(&m2, bytes_to_float(data.data));
-          }
-        }
-
-
-        // Restart reception
-        HAL_UART_Receive_IT(&huart3, msg, 6);
-      }
+      uart_tx_ready = false;
+      createEncMessage(M1_CMD_ENC, MotorController_GetCounter(&m1), tx_buffer_enc_1);
+      createEncMessage(M2_CMD_ENC, MotorController_GetCounter(&m2), tx_buffer_enc_2);
+      HAL_UART_Transmit_DMA(&huart3, tx_buffer_enc_1, PACKET_SIZE);
+      HAL_Delay(50);
+      HAL_UART_Transmit_DMA(&huart3, tx_buffer_enc_2, PACKET_SIZE);
     }
+    HAL_Delay(100);
+
   }
 }
 
@@ -195,16 +208,23 @@ void SystemClock_Config(void)
   }
 }
 
+/* USER CODE BEGIN 4 */
+
+/* USER CODE END 4 */
+
 /**
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
 void Error_Handler(void)
 {
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
   }
+  /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
