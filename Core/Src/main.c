@@ -25,7 +25,7 @@ volatile bool led_blink_flag = false;
 volatile uint32_t led_blink_time = 0;
 
 
-uint8_t core_id = 0x43;
+const uint8_t core_id = 0x41;
 
 
 MotorController_t m1;
@@ -86,8 +86,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
   if (huart == &huart3)
   {
-
     protocol data;
+
+    BlinkLedShort();
     if (validate_msg(msg))
     {
       parse_msg(&data, msg);
@@ -171,6 +172,7 @@ int main(void)
       HAL_GPIO_WritePin(LED_GPIO_PORT, LED_GPIO_PIN, GPIO_PIN_SET); // выключить
       led_blink_flag = false;
     }
+       // выключить
       MotorController_UpdateEnc(&m1);
       MotorController_UpdateEnc(&m2);
       if (uart_tx_ready)
