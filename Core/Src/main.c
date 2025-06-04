@@ -12,12 +12,20 @@
 
 #define SIZE 4
 #define PACKET_SIZE 8
+
+#define LED_GPIO_PORT GPIOC
+#define LED_GPIO_PIN  GPIO_PIN_13
+
 void SystemClock_Config(void);
 
 uint8_t msg[PACKET_SIZE] = {0};
 volatile bool uart_tx_ready = true;
 
-uint8_t core_id = 0x41;
+volatile bool led_blink_flag = false;
+volatile uint32_t led_blink_time = 0;
+
+
+uint8_t core_id = 0x43;
 
 
 MotorController_t m1;
@@ -25,6 +33,18 @@ MotorController_t m2;
 
 uint8_t tx_buffer_enc_1[PACKET_SIZE] = {0};
 uint8_t tx_buffer_enc_2[PACKET_SIZE] = {0};
+
+
+// Моргание светодиодом
+void BlinkLedShort(void)
+{
+  HAL_GPIO_WritePin(LED_GPIO_PORT, LED_GPIO_PIN, GPIO_PIN_RESET); // включить
+  led_blink_flag = true;
+  led_blink_time = HAL_GetTick(); // запомнить время включения
+}
+
+
+
 void createEncMessage(const uint8_t CMD,  int32_t count, uint8_t* tx_data)
 {
   protocol msg;
@@ -59,15 +79,19 @@ bool validate_msg(const uint8_t* msg)
 }
 
 
+
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+
   if (huart == &huart3)
   {
+
     protocol data;
     if (validate_msg(msg))
     {
       parse_msg(&data, msg);
-
+      BlinkLedShort();
       if (data.core_id == core_id )
       {
         if (data.cmd == m1.id)
@@ -79,6 +103,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
           MotorController_SetSpeed(&m2, bytes_to_float(data.data));
         }
       }
+
     }
 
     HAL_UART_Receive_DMA(&huart3, msg, PACKET_SIZE);
@@ -111,12 +136,12 @@ int main(void)
   MX_TIM4_Init();
   MX_USART3_UART_Init();
 
-  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_3);
-  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_4);
+  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_1);
+  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_2);
 
 
-  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_3);
-  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_4);
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_1);
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_2);
 
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
@@ -138,33 +163,26 @@ int main(void)
   m2.backward_ch = TIM_CHANNEL_2;
   m2.counter = 0;
 
-
-  if (HAL_GPIO_ReadPin(ADDR_X0_GPIO_Port, ADDR_X0_Pin) == 0)
-  {
-    core_id = 0x42;
-  }
-  if (HAL_GPIO_ReadPin(ADDR_X1_GPIO_Port, ADDR_X1_Pin) == 0)
-  {
-    core_id = 0x43;
-  }
-
-
   HAL_UART_Receive_DMA(&huart3, msg, PACKET_SIZE);
   while (1)
   {
-    MotorController_UpdateEnc(&m1);
-    MotorController_UpdateEnc(&m2);
-
-    if (uart_tx_ready)
+    if (led_blink_flag && (HAL_GetTick() - led_blink_time >= 50)) // 50 мс моргание
     {
-      uart_tx_ready = false;
-      createEncMessage(M1_CMD_ENC, MotorController_GetCounter(&m1), tx_buffer_enc_1);
-      createEncMessage(M2_CMD_ENC, MotorController_GetCounter(&m2), tx_buffer_enc_2);
-      HAL_UART_Transmit_DMA(&huart3, tx_buffer_enc_1, PACKET_SIZE);
-      HAL_Delay(50);
-      HAL_UART_Transmit_DMA(&huart3, tx_buffer_enc_2, PACKET_SIZE);
+      HAL_GPIO_WritePin(LED_GPIO_PORT, LED_GPIO_PIN, GPIO_PIN_SET); // выключить
+      led_blink_flag = false;
     }
-    HAL_Delay(100);
+      MotorController_UpdateEnc(&m1);
+      MotorController_UpdateEnc(&m2);
+      if (uart_tx_ready)
+      {
+        uart_tx_ready = false;
+        createEncMessage(M1_CMD_ENC, MotorController_GetCounter(&m1), tx_buffer_enc_1);
+        createEncMessage(M2_CMD_ENC, MotorController_GetCounter(&m2), tx_buffer_enc_2);
+        HAL_UART_Transmit_DMA(&huart3, tx_buffer_enc_1, PACKET_SIZE);
+        HAL_Delay(50);
+        HAL_UART_Transmit_DMA(&huart3, tx_buffer_enc_2, PACKET_SIZE);
+      }
+      HAL_Delay(100);
 
   }
 }
